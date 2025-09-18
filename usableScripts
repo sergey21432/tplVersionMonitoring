@@ -1,0 +1,6 @@
+pip freeze > requirements.txt
+
+docker ps -a
+docker stop/rm <id>
+docker-compose run --rm web python manage.py check_template_updates --debug --dry-run
+docker-compose build
