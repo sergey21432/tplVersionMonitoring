@@ -1,9 +1,11 @@
 # Конфигурационные файлы
 config.env
+.env
 .env.local
 .env.production
 .env.staging
 .env.development
+.env.docker
 
 # Docker конфигурации
 docker-compose.override.yml
