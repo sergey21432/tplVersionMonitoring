@@ -6,8 +6,37 @@ set -e
 
 echo "🚀 Инициализация Django приложения..."
 
-# Пропускаем проверку базы данных - подключаемся напрямую
-echo "✅ База данных готова!"
+# Ждем готовности внешней базы данных
+echo "⏳ Ожидание готовности внешней базы данных..."
+python -c "
+import psycopg2
+import os
+import time
+import sys
+
+max_retries = 30
+retry_count = 0
+
+while retry_count < max_retries:
+    try:
+        conn = psycopg2.connect(
+            host=os.getenv('DB_HOST', 'localhost'),
+            port=os.getenv('DB_PORT', '5432'),
+            user=os.getenv('DB_USER', 'postgres'),
+            password=os.getenv('DB_PASSWORD', 'password'),
+            database=os.getenv('DB_NAME', 'postgres')  # Подключаемся к нужной базе данных
+        )
+        conn.close()
+        print('✅ Внешняя база данных готова!')
+        break
+    except psycopg2.OperationalError as e:
+        retry_count += 1
+        print(f'⏳ Попытка {retry_count}/{max_retries}: {e}')
+        time.sleep(2)
+else:
+    print('❌ Не удалось подключиться к внешней базе данных')
+    sys.exit(1)
+"
 
 # Выполняем миграции
 echo "📊 Выполнение миграций..."

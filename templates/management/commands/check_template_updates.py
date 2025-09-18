@@ -76,61 +76,39 @@ class Command(BaseCommand):
                 self.stdout.write(f'Проверяем шаблон: {template.template_code}')
                 
                 # Получаем информацию о шаблоне из API
-                api_data = eias_service.get_template_info(
-                    template.template_code, 
-                    template.current_version
-                )
-                if not api_data:
+                update_log = eias_service.get_template_info(template)
+                if not update_log:
                     self.stdout.write(
                         self.style.ERROR(f'Не удалось получить данные для {template.template_code}')
                     )
                     error_count += 1
                     continue
                 
-                latest_version = api_data.get('latest_version')
-                if not latest_version:
-                    self.stdout.write(
-                        self.style.WARNING(f'Версия не найдена в ответе для {template.template_code}')
-                    )
-                    continue
-                
                 # Проверяем, изменилась ли версия
-                if latest_version == template.current_version:
+                if update_log.new_version == template.current_version:
                     self.stdout.write(
-                        f'Версия актуальна: {template.template_code} ({latest_version})'
+                        f'Версия актуальна: {template.template_code} ({update_log.new_version})'
                     )
                 else:
                     self.stdout.write(
                         self.style.SUCCESS(
                             f'Обнаружено обновление: {template.template_code} '
-                            f'{template.current_version} → {latest_version}'
+                            f'{template.current_version} → {update_log.new_version}'
                         )
                     )
                     
-                    # Создаем запись в логе
-                    update_log = UpdateLog.objects.create(
-                        template=template,
-                        old_version=template.current_version,
-                        new_version=latest_version,
-                        has_validation_changes=api_data.get('has_validation_changes', False),
-                        raw_xml=api_data.get('raw_xml', ''),
-                        message_status=UpdateLog.MessageStatus.NOTSENT
-                    )
+                    # Сохраняем запись в логе только при обновлении
+                    update_log.save()
                     
                     # Отправляем уведомление в Mattermost (если не dry-run)
                     if not options['dry_run']:
-                        success = mattermost_service.send_template_update_notification(
-                            template_code=template.template_code,
-                            old_version=template.current_version,
-                            new_version=latest_version,
-                            has_validation_changes=api_data.get('has_validation_changes', False)
-                        )
+                        success = mattermost_service.send_template_update_notification(update_log)
                         
                         if success:
                             update_log.message_status = UpdateLog.MessageStatus.SENT
                             update_log.save()
                             # Обновляем версию в базе данных
-                            template.current_version = latest_version
+                            template.current_version = update_log.new_version
                             self.stdout.write(
                                 self.style.SUCCESS(f'Уведомление отправлено для {template.template_code}')
                             )

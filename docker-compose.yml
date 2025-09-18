@@ -1,22 +1,4 @@
-version: '3.8'
-
 services:
-  # База данных PostgreSQL
-  db:
-    image: postgres:15
-    environment:
-      POSTGRES_DB: ${DB_NAME:-postgres}
-      POSTGRES_USER: ${DB_USER:-postgres}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-password}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
 
   # Django приложение
   web:
@@ -38,17 +20,13 @@ services:
       - DEBUG=${DEBUG:-True}
       - MATTERMOST_WEBHOOK_URL=${MATTERMOST_WEBHOOK_URL:-}
       - MATTERMOST_CHANNEL=${MATTERMOST_CHANNEL:-}
-    # depends_on:
-    #   db:
-    #     condition: service_healthy
     restart: unless-stopped
 
   # Cron для автоматической проверки обновлений
   cron:
     build: .
-    command: >
-      sh -c "echo '0 */6 * * * python manage.py check_template_updates' | crontab - &&
-             crond -f"
+    user: root
+    command: /app/start-cron.sh
     volumes:
       - .:/app
       - logs_volume:/app/logs
@@ -62,12 +40,8 @@ services:
       - DEBUG=${DEBUG:-False}
       - MATTERMOST_WEBHOOK_URL=${MATTERMOST_WEBHOOK_URL:-}
       - MATTERMOST_CHANNEL=${MATTERMOST_CHANNEL:-}
-    # depends_on:
-    #   db:
-    #     condition: service_healthy
     restart: unless-stopped
 
 volumes:
-  postgres_data:
   static_volume:
   logs_volume:

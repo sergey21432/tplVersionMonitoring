@@ -1,10 +1,11 @@
 import requests
 import xml.etree.ElementTree as ET
-from typing import Dict, Optional
+from typing import Optional
 from django.conf import settings
 from django.utils import timezone
 import logging
 import re
+from .models import UpdateLog, Template
 
 logger = logging.getLogger(__name__)
 
@@ -16,20 +17,20 @@ class EIASAPIService:
         self.base_url = settings.EIAS_API_BASE_URL
         self.timeout = 30
     
-    def get_template_info(self, template_code: str, version: str = "1.0.0") -> Optional[Dict]:
+    def get_template_info(self, template: Template) -> Optional[UpdateLog]:
         """
         Получает информацию о шаблоне из API EIAS
         
         Args:
-            template_code: Код шаблона
+            template: Объект шаблона
             version: Версия шаблона для запроса
             
         Returns:
-            Словарь с информацией о шаблоне или None в случае ошибки
+            Объект UpdateLog с информацией о шаблоне или None в случае ошибки
         """
         params = {
-            'P_TC': template_code,
-            'P_V': version,
+            'P_TC': template.template_code,
+            'P_V': template.current_version,
             'P_NSRF': '',
             'P_ENTITY': '',
             'P_EXTENDED_INFO': ''
@@ -48,52 +49,60 @@ class EIASAPIService:
             content = response.content
             xml_text = content.decode(response.encoding or 'utf-8') or None
             
-            return self._parse_xml_response(xml_text, template_code)
+            return self._parse_xml_response(xml_text, template)
             
         except requests.RequestException as e:
-            logger.error(f"Ошибка при запросе к API EIAS для {template_code}: {e}")
+            logger.error(f"Ошибка при запросе к API EIAS для {template.template_code}: {e}")
             return None
         except ET.ParseError as e:
-            logger.error(f"Ошибка парсинга XML для {template_code}: {e}")
+            logger.error(f"Ошибка парсинга XML для {template.template_code}: {e}")
             return None
         except UnicodeDecodeError:
-            logger.error(f"Ошибка декодирования XML для {template_code}: {e}")
+            logger.error(f"Ошибка декодирования XML для {template.template_code}: {e}")
             return None
         except Exception as e:
-            logger.error(f"Неожиданная ошибка для {template_code}: {e}")
+            logger.error(f"Неожиданная ошибка для {template.template_code}: {e}")
             return None
     
-    def _parse_xml_response(self, xml_text: str, template_code: str) -> Dict:
+    def _parse_xml_response(self, xml_text: str, template: Template) -> Optional[UpdateLog]:
         """
-        Парсит XML ответ от API EIAS
+        Парсит XML ответ от API EIAS и создает объект UpdateLog
         
         Args:
-            root: Корневой элемент XML
-            template_code: Код шаблона
+            xml_text: XML текст ответа
+            template: Объект шаблона
             
         Returns:
-            Словарь с извлеченной информацией
+            Объект UpdateLog или None в случае ошибки
         """
-        result = {
-            'template_code': template_code,
-            'latest_version': None,
-            'has_validation_changes': False,
-            'raw_xml': xml_text,
-            'parsed_at': timezone.now()
-        }
+        try:
+            root = ET.fromstring(xml_text)
+            # Сначала определяем namespace
+            namespace = root.tag.split('}')[0][1:] if '}' in root.tag else ''
         
-        root = ET.fromstring(xml_text)
-        # Сначала определяем namespace
-        namespace = root.tag.split('}')[0][1:] if '}' in root.tag else ''
-        # Ищем информацию о версии
-        result['latest_version'] = root.find(f'.//{{{namespace}}}VERSION').text
-        
-        # Проверяем изменения в проверках
-        description_update = root.find(f'.//{{{namespace}}}DESCRIPTION_UPDATE').text
-        if re.search( r'\bпровер\w*\b', description_update, re.IGNORECASE):
-            result['has_validation_changes'] = True
-        
-        return result
+            # Проверяем изменения в проверках
+            description_update = root.find(f'.//{{{namespace}}}DESCRIPTION_UPDATE').text
+            if re.search( r'\bпровер\w*\b', description_update, re.IGNORECASE):
+                has_validation_changes = True
+            
+            # Создаем объект UpdateLog
+            update_log = UpdateLog(
+                template=template,
+                old_version=template.current_version,
+                new_version=root.find(f'.//{{{namespace}}}VERSION').text,
+                has_validation_changes=has_validation_changes,
+                raw_xml=xml_text,
+                message_status=UpdateLog.MessageStatus.NOTSENT
+            )
+            
+            return update_log
+            
+        except ET.ParseError as e:
+            logger.error(f"Ошибка парсинга XML для {template.template_code}: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Неожиданная ошибка при парсинге XML для {template.template_code}: {e}")
+            return None
 
 
 class MattermostService:
@@ -103,21 +112,12 @@ class MattermostService:
         self.webhook_url = settings.MATTERMOST_WEBHOOK_URL
         self.channel = settings.MATTERMOST_CHANNEL
     
-    def send_template_update_notification(
-        self, 
-        template_code: str, 
-        old_version: str, 
-        new_version: str,
-        has_validation_changes: bool = False
-    ) -> bool:
+    def send_template_update_notification(self, update_log: UpdateLog) -> bool:
         """
         Отправляет уведомление об обновлении шаблона
         
         Args:
-            template_code: Код шаблона
-            old_version: Старая версия
-            new_version: Новая версия
-            has_validation_changes: Есть ли изменения в проверках
+            update_log: Объект UpdateLog с информацией об обновлении
             
         Returns:
             True если уведомление отправлено успешно, False иначе
@@ -127,23 +127,23 @@ class MattermostService:
             return False
         
         # Формируем сообщение
-        emoji = "🚨" if has_validation_changes else "📝"
+        emoji = "🚨" if update_log.has_validation_changes else "📝"
         title = f"{emoji} Обновление шаблона"
         
         message = f"**{title}**\n\n"
-        message += f"**Шаблон:** `{template_code}`\n"
-        message += f"**Версия:** `{old_version}` → `{new_version}`\n"
+        message += f"**Шаблон:** `{update_log.template.template_code}`\n"
+        message += f"**Версия:** `{update_log.old_version}` → `{update_log.new_version}`\n"
         
-        if has_validation_changes:
+        if update_log.has_validation_changes:
             message += "⚠️ **КРИТИЧНОЕ ОБНОВЛЕНИЕ**\n"
             message += "🔍 **Изменения в проверках**\n"
         
-        message += f"**Время:** {timezone.now().strftime('%d.%m.%Y %H:%M:%S')}"
+        message += f"**Время:** {update_log.created_at.strftime('%d.%m.%Y %H:%M:%S')}"
         
         payload = {
             "text": message,
             "channel": self.channel,
-            "username": "Template Monitor",
+            "username": "p4e_tpl_version_monitoring",
             "icon_emoji": ":robot_face:"
         }
         
@@ -155,7 +155,7 @@ class MattermostService:
             )
             response.raise_for_status()
             
-            logger.info(f"Уведомление отправлено в Mattermost для {template_code}")
+            logger.info(f"Уведомление отправлено в Mattermost для {update_log.template.template_code}")
             return True
             
         except requests.RequestException as e:
